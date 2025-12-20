@@ -305,10 +305,10 @@ def send_alert(symbol, alert_type, current_price, db, telegram, logger):
 <b>{alert_text}</b>
 <b>종목코드: {symbol}</b>
 현재가: {current_price:,.0f}원
-5일: {high_5d_str}원
-20일: {high_20d_str}원
-60일: {high_60d_str}원
-120일: {high_120d_str}원
+5일최고가: {high_5d_str}원
+20일최고가: {high_20d_str}원
+60일최고가: {high_60d_str}원
+120일최고가: {high_120d_str}원
 
 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """.strip()
