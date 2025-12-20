@@ -1,0 +1,6 @@
+.claude/
+data/
+logs/
+.vscode/
+__pycache__/
+.env
