@@ -334,7 +334,7 @@ def create_chart(symbol, candles, logger, hlines_data):
         )
 
         DATA_DIR = Path('data')
-        save_path = DATA_DIR / f"chart_{symbol}_{datetime.now().strftime('%H%M%S')}.png"
+        save_path = DATA_DIR / f"chart_{symbol}.png"
 
         # 차트 그리기
         hlines_values = [h[0] for h in hlines_data]
