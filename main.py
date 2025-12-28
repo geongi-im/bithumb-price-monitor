@@ -4,6 +4,12 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 import requests
+import pandas as pd
+import mplfinance as mpf
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import matplotlib.font_manager as fm
+import numpy as np
 
 from utils.logger_util import LoggerUtil
 from utils.telegram_util import TelegramUtil
@@ -90,9 +96,11 @@ def get_daily_candles(symbol, count=120, logger=None):
         candles = []
         for candle in data:
             candles.append({
-                'trade_price': float(candle['trade_price']),
+                'opening_price': float(candle['opening_price']),
                 'high_price': float(candle['high_price']),
                 'low_price': float(candle['low_price']),
+                'trade_price': float(candle['trade_price']),
+                'candle_acc_trade_volume': float(candle['candle_acc_trade_volume']),
                 'candle_date_time_kst': candle['candle_date_time_kst']
             })
 
@@ -270,17 +278,128 @@ def process_symbol(symbol, logger, telegram, db):
         send_alert(symbol, 'LOW', current_price, db, telegram, logger)
 
 
+def create_chart(symbol, candles, logger, hlines_data):
+    """
+    차트 이미지 생성 (yy-mm-dd 포맷, 한국어 지원, 상단 밀착 타이틀, 기간별 라벨 추가)
+    Args:
+        hlines_data: [(price, label), ...] 필수 파라미터
+    """
+    try:
+        # 데이터프레임 변환
+        df = pd.DataFrame(candles)
+        
+        # 컬럼명 매핑 (빗썸 -> mplfinance)
+        mapping = {
+            'candle_date_time_kst': 'Date',
+            'opening_price': 'Open',
+            'high_price': 'High',
+            'low_price': 'Low',
+            'trade_price': 'Close',
+            'candle_acc_trade_volume': 'Volume'
+        }
+        df = df.rename(columns={k: v for k, v in mapping.items() if k in df.columns})
+        
+        # 인덱스 설정
+        df['Date'] = pd.to_datetime(df['Date'])
+        df.set_index('Date', inplace=True)
+        df.sort_index(inplace=True)
+
+        # 폰트 및 스타일 설정 (윈도우 기본 맑은 고딕 사용)
+        plt.rcParams['axes.unicode_minus'] = False
+        
+        # 차트 스타일 설정
+        mc = mpf.make_marketcolors(up='red', down='blue', inherit=True)
+        s = mpf.make_mpf_style(
+            marketcolors=mc, 
+            gridstyle='--', 
+            y_on_right=True,
+            rc={'font.family': 'Malgun Gothic', 'axes.unicode_minus': False}
+        )
+
+        DATA_DIR = Path('data')
+        save_path = DATA_DIR / f"chart_{symbol}_{datetime.now().strftime('%H%M%S')}.png"
+
+        # 차트 그리기
+        hlines_values = [h[0] for h in hlines_data]
+        
+        fig, axes = mpf.plot(
+            df,
+            type='candle',
+            volume=True,
+            style=s,
+            ylabel='', # Y축 라벨 제거
+            ylabel_lower='', # 거래량 라벨 제거
+            datetime_format='%y-%m-%d',
+            hlines=dict(hlines=hlines_values, colors=['#FFC300','#FF5733','#C70039','#900C3F'], linestyle='--', linewidths=1.0) if hlines_values else None,
+            returnfig=True,
+            figratio=(10, 7)
+        )
+        
+        plt.rcParams['axes.formatter.useoffset'] = False
+        
+        axes[0].set_title(f"{symbol}/KRW 차트", fontsize=10, fontweight='bold', pad=8)
+        
+        def conditional_formatter(x, p):
+            if abs(x) >= 10000:
+                return f'{int(x/1000):,}K'
+            return f'{int(x):,}'
+
+        for ax in fig.get_axes():
+            # 10^6 제거
+            ax.yaxis.get_offset_text().set_visible(False)
+            ax.yaxis.get_offset_text().set_text("")
+            ax.xaxis.get_offset_text().set_visible(False)
+            ax.xaxis.get_offset_text().set_text("")
+            ax.yaxis.set_major_formatter(mticker.FuncFormatter(conditional_formatter))
+
+        from matplotlib.text import Text
+        for obj in fig.findobj(Text):
+            text = obj.get_text()
+            if text and '10' in text and ('^' in text or '×' in text or 'e' in text):
+                obj.set_visible(False)
+
+        # X축 레이아웃 설정
+        if len(axes) > 0:
+            for ax in fig.get_axes():
+                ax.set_xlim(-0.5, len(df)-0.5)
+                
+                total_days = len(df)
+                num_ticks = 5
+                tick_indices = [int(i) for i in np.linspace(0, total_days - 1, num_ticks)]
+                
+                ax.set_xticks(tick_indices)
+                ax.set_xticklabels([df.index[i].strftime('%y-%m-%d') for i in tick_indices])
+                
+                for label in ax.get_xticklabels():
+                    label.set_fontsize(7.5)
+                    label.set_rotation(0)
+                    label.set_horizontalalignment('center')
+                ax.tick_params(axis='x', pad=5)
+
+        # 가로선 라벨 추가 (우측 끝)
+        if hlines_data:
+            # mpf.plot(returnfig=True)에서 axes[0]는 메인 차트 영역임
+            main_ax = axes[0]
+            for val, label in hlines_data:
+                main_ax.text(len(df)-0.5, val, f' {label}', va='center', ha='left', fontsize=8, color='#C70039', fontweight='bold', clip_on=False)
+
+        # 여백 조정: 전체 이미지 상단 여백을 줄이고 타이틀과 차트를 밀착
+        fig.subplots_adjust(top=0.93, bottom=0.10, left=0.08, right=0.92)
+
+        # 이미지 저장
+        fig.savefig(str(save_path), dpi=100, bbox_inches='tight', pad_inches=0.05)
+        plt.close(fig)
+
+        logger.info(f"[{symbol}] 차트 생성 완료: {save_path.name}")
+        return str(save_path)
+    except Exception as e:
+        logger.error(f"[{symbol}] 차트 생성 실패: {str(e)}")
+        raise
+
+
 def send_alert(symbol, alert_type, current_price, db, telegram, logger):
     """
-    텔레그램 알림 전송
-
-    Args:
-        symbol: 종목명
-        alert_type: 'HIGH' 또는 'LOW'
-        current_price: 현재가
-        db: DatabaseUtil 인스턴스
-        telegram: TelegramUtil 인스턴스
-        logger: Logger 인스턴스
+    텔레그램 알림 전송 (텍스트 + 차트)
     """
 
     if alert_type == 'HIGH':
@@ -318,10 +437,38 @@ def send_alert(symbol, alert_type, current_price, db, telegram, logger):
 """.strip()
 
     try:
-        telegram.send_message(message)
+        # 차트 생성 (최근 120일 데이터 기준)
+        candles = get_daily_candles(symbol, count=120, logger=logger)
+        chart_path = None
+        if candles:
+            candles.reverse() # 오래된 순으로
+            
+            # 수평선 데이터 준비 (기간별 고가/저가)
+            hlines_data = []
+            if price_5d: hlines_data.append((price_5d, "5일"))
+            if price_20d: hlines_data.append((price_20d, "20일"))
+            if price_60d: hlines_data.append((price_60d, "60일"))
+            if price_120d: hlines_data.append((price_120d, "120일"))
+            
+            chart_path = create_chart(symbol, candles, logger, hlines_data=hlines_data)
+
+            if chart_path:
+                telegram.send_photo(chart_path, caption=message)
+                try:
+                    os.remove(chart_path)
+                except:
+                    pass
+        else:
+            telegram.send_message(message)
+            
         logger.info(f"[{symbol}] 알림 전송 완료")
     except Exception as e:
-        logger.error(f"[{symbol}] 알림 전송 실패: {str(e)}")
+        error_msg = f"⚠️ [{symbol}] 알림 전송 중 오류 발생: {str(e)}"
+        logger.error(error_msg)
+        try:
+            telegram.send_message(error_msg)
+        except:
+            pass
 
 
 if __name__ == "__main__":
