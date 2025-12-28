@@ -1,6 +1,6 @@
 import os
 import sys
-from pathlib import Path
+import glob
 from datetime import datetime
 from dotenv import load_dotenv
 import requests
@@ -19,12 +19,12 @@ from utils.db_util import DatabaseUtil
 load_dotenv()
 
 # 경로 설정
-PROJECT_ROOT = Path(__file__).parent
-DATA_DIR = PROJECT_ROOT / 'data'
-DB_PATH = DATA_DIR / 'bithumb_price_monitor.db'
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = f"{PROJECT_ROOT}/data"
+DB_PATH = f"{DATA_DIR}/bithumb_price_monitor.db"
 
 # 디렉토리 생성
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+os.makedirs(DATA_DIR, exist_ok=True)
 
 
 def validate_env():
@@ -286,13 +286,13 @@ def create_chart(symbol, candles, logger, hlines_data):
     """
     try:
         # 이전 차트 파일 정리 (해당 symbol의 png 파일 삭제)
-        DATA_DIR = Path('data')
-        for old_chart in DATA_DIR.glob(f"chart_{symbol}_*.png"):
+        data_dir = f"{PROJECT_ROOT}/data"
+        for old_chart in glob.glob(f"{data_dir}/chart_{symbol}_*.png"):
             try:
                 os.remove(old_chart)
-                logger.info(f"[{symbol}] 이전 차트 파일 삭제: {old_chart.name}")
+                logger.info(f"[{symbol}] 이전 차트 파일 삭제: {os.path.basename(old_chart)}")
             except Exception as e:
-                logger.warning(f"[{symbol}] 이전 차트 파일 삭제 실패: {old_chart.name}, {str(e)}")
+                logger.warning(f"[{symbol}] 이전 차트 파일 삭제 실패: {os.path.basename(old_chart)}, {str(e)}")
         
         # 데이터프레임 변환
         df = pd.DataFrame(candles)
@@ -314,11 +314,11 @@ def create_chart(symbol, candles, logger, hlines_data):
         df.sort_index(inplace=True)
 
         # 폰트 및 스타일 설정 (Noto Sans KR 사용)
-        FONT_PATH = PROJECT_ROOT / 'fonts' / 'NotoSansKR-Regular.ttf'
+        FONT_PATH = f"{PROJECT_ROOT}/fonts/NotoSansKR-Regular.ttf"
         
         # 폰트를 matplotlib 폰트 매니저에 등록
-        fm.fontManager.addfont(str(FONT_PATH))
-        font_prop = fm.FontProperties(fname=str(FONT_PATH))
+        fm.fontManager.addfont(FONT_PATH)
+        font_prop = fm.FontProperties(fname=FONT_PATH)
         font_name = font_prop.get_name()
         
         plt.rcParams['font.family'] = font_name
@@ -333,8 +333,8 @@ def create_chart(symbol, candles, logger, hlines_data):
             rc={'font.family': font_name, 'axes.unicode_minus': False}
         )
 
-        DATA_DIR = Path('data')
-        save_path = DATA_DIR / f"chart_{symbol}.png"
+        data_dir = f"{PROJECT_ROOT}/data"
+        save_path = f"{data_dir}/chart_{symbol}.png"
 
         # 차트 그리기
         hlines_values = [h[0] for h in hlines_data]
@@ -404,11 +404,11 @@ def create_chart(symbol, candles, logger, hlines_data):
         fig.subplots_adjust(top=0.93, bottom=0.10, left=0.08, right=0.92)
 
         # 이미지 저장
-        fig.savefig(str(save_path), dpi=100, bbox_inches='tight', pad_inches=0.05)
+        fig.savefig(save_path, dpi=100, bbox_inches='tight', pad_inches=0.05)
         plt.close(fig)
 
-        logger.info(f"[{symbol}] 차트 생성 완료: {save_path.name}")
-        return str(save_path)
+        logger.info(f"[{symbol}] 차트 생성 완료: {os.path.basename(save_path)}")
+        return save_path
     except Exception as e:
         logger.error(f"[{symbol}] 차트 생성 실패: {str(e)}")
         raise
