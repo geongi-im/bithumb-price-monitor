@@ -285,6 +285,15 @@ def create_chart(symbol, candles, logger, hlines_data):
         hlines_data: [(price, label), ...] 필수 파라미터
     """
     try:
+        # 이전 차트 파일 정리 (해당 symbol의 png 파일 삭제)
+        DATA_DIR = Path('data')
+        for old_chart in DATA_DIR.glob(f"chart_{symbol}_*.png"):
+            try:
+                os.remove(old_chart)
+                logger.info(f"[{symbol}] 이전 차트 파일 삭제: {old_chart.name}")
+            except Exception as e:
+                logger.warning(f"[{symbol}] 이전 차트 파일 삭제 실패: {old_chart.name}, {str(e)}")
+        
         # 데이터프레임 변환
         df = pd.DataFrame(candles)
         
@@ -462,10 +471,6 @@ def send_alert(symbol, alert_type, current_price, db, telegram, logger):
 
             if chart_path:
                 telegram.send_photo(chart_path, caption=message)
-                try:
-                    os.remove(chart_path)
-                except:
-                    pass
         else:
             telegram.send_message(message)
             
