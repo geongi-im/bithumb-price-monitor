@@ -305,7 +305,7 @@ def create_chart(symbol, candles, logger, hlines_data):
         df.sort_index(inplace=True)
 
         # 폰트 및 스타일 설정 (Noto Sans KR 사용)
-        FONT_PATH = PROJECT_ROOT / 'data' / 'fonts' / 'NotoSansKR-Regular.ttf'
+        FONT_PATH = PROJECT_ROOT / 'fonts' / 'NotoSansKR-Regular.ttf'
         
         # 폰트를 matplotlib 폰트 매니저에 등록
         fm.fontManager.addfont(str(FONT_PATH))
@@ -474,7 +474,7 @@ def send_alert(symbol, alert_type, current_price, db, telegram, logger):
         error_msg = f"⚠️ [{symbol}] 알림 전송 중 오류 발생: {str(e)}"
         logger.error(error_msg)
         try:
-            telegram.send_message(error_msg)
+            telegram.send_test_message(error_msg)
         except:
             pass
 
@@ -485,4 +485,13 @@ if __name__ == "__main__":
     except Exception as e:
         logger = LoggerUtil().get_logger()
         logger.error(f"치명적 오류: {str(e)}", exc_info=True)
+        
+        # 테스트 채널로 오류 메시지 전송
+        try:
+            telegram = TelegramUtil()
+            error_msg = f"🚨 치명적 오류 발생\n\n{str(e)}\n\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            telegram.send_test_message(error_msg)
+        except:
+            pass
+        
         sys.exit(1)
