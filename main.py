@@ -285,30 +285,34 @@ def send_alert(symbol, alert_type, current_price, db, telegram, logger):
 
     if alert_type == 'HIGH':
         alert_text = "🟥 당일 고가 갱신"
+        price_5d = db.get_period_high(symbol, 5)
+        price_20d = db.get_period_high(symbol, 20)
+        price_60d = db.get_period_high(symbol, 60)
+        price_120d = db.get_period_high(symbol, 120)
+        period_label = "최고가"
     else:
-        alert_text = "🟦당일 저가 갱신"
+        alert_text = "🟦 당일 저가 갱신"
+        price_5d = db.get_period_low(symbol, 5)
+        price_20d = db.get_period_low(symbol, 20)
+        price_60d = db.get_period_low(symbol, 60)
+        price_120d = db.get_period_low(symbol, 120)
+        period_label = "최저가"
 
-    # 기간별 고가 조회
-    high_5d = db.get_period_high(symbol, 5)
-    high_20d = db.get_period_high(symbol, 20)
-    high_60d = db.get_period_high(symbol, 60)
-    high_120d = db.get_period_high(symbol, 120)
-
-    # 기간별 최고가 포맷팅
-    high_5d_str = f"{high_5d:,.0f}" if high_5d is not None else "N/A"
-    high_20d_str = f"{high_20d:,.0f}" if high_20d is not None else "N/A"
-    high_60d_str = f"{high_60d:,.0f}" if high_60d is not None else "N/A"
-    high_120d_str = f"{high_120d:,.0f}" if high_120d is not None else "N/A"
+    # 기간별 가격 포맷팅
+    price_5d_str = f"{price_5d:,.0f}" if price_5d is not None else "N/A"
+    price_20d_str = f"{price_20d:,.0f}" if price_20d is not None else "N/A"
+    price_60d_str = f"{price_60d:,.0f}" if price_60d is not None else "N/A"
+    price_120d_str = f"{price_120d:,.0f}" if price_120d is not None else "N/A"
 
     # 메시지 작성
     message = f"""
 <b>{alert_text}</b>
 <b>종목코드: {symbol}</b>
 현재가: {current_price:,.0f}원
-5일최고가: {high_5d_str}원
-20일최고가: {high_20d_str}원
-60일최고가: {high_60d_str}원
-120일최고가: {high_120d_str}원
+5일{period_label}: {price_5d_str}원
+20일{period_label}: {price_20d_str}원
+60일{period_label}: {price_60d_str}원
+120일{period_label}: {price_120d_str}원
 
 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """.strip()

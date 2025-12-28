@@ -191,3 +191,27 @@ class DatabaseUtil:
 
         result = cursor.fetchone()
         return result['max_price'] if result and result['max_price'] else None
+
+    def get_period_low(self, symbol, days):
+        """
+        N일 기준 최저가 조회
+
+        Args:
+            symbol: 'BTC', 'XRP', 'ETH'
+            days: 5, 20, 60, 120
+
+        Returns:
+            float: N일간 trade_price 중 최저값
+            None: 데이터 없음
+        """
+        table_name = f"bp_price_{symbol.lower()}"
+
+        cursor = self.conn.cursor()
+        cursor.execute(f'''
+            SELECT MIN(trade_price) as min_price
+            FROM {table_name}
+            WHERE DATE(reg_date) >= DATE('now', '-{days} days')
+        ''')
+
+        result = cursor.fetchone()
+        return result['min_price'] if result and result['min_price'] else None
