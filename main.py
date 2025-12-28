@@ -304,7 +304,15 @@ def create_chart(symbol, candles, logger, hlines_data):
         df.set_index('Date', inplace=True)
         df.sort_index(inplace=True)
 
-        # 폰트 및 스타일 설정 (윈도우 기본 맑은 고딕 사용)
+        # 폰트 및 스타일 설정 (Noto Sans KR 사용)
+        FONT_PATH = PROJECT_ROOT / 'data' / 'fonts' / 'NotoSansKR-Regular.ttf'
+        
+        # 폰트를 matplotlib 폰트 매니저에 등록
+        fm.fontManager.addfont(str(FONT_PATH))
+        font_prop = fm.FontProperties(fname=str(FONT_PATH))
+        font_name = font_prop.get_name()
+        
+        plt.rcParams['font.family'] = font_name
         plt.rcParams['axes.unicode_minus'] = False
         
         # 차트 스타일 설정
@@ -313,7 +321,7 @@ def create_chart(symbol, candles, logger, hlines_data):
             marketcolors=mc, 
             gridstyle='--', 
             y_on_right=True,
-            rc={'font.family': 'Malgun Gothic', 'axes.unicode_minus': False}
+            rc={'font.family': font_name, 'axes.unicode_minus': False}
         )
 
         DATA_DIR = Path('data')
