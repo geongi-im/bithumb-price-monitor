@@ -278,11 +278,13 @@ def process_symbol(symbol, logger, telegram, db):
         send_alert(symbol, 'LOW', current_price, db, telegram, logger)
 
 
-def create_chart(symbol, candles, logger, hlines_data):
+def create_chart(symbol, candles, logger):
     """
-    차트 이미지 생성 (yy-mm-dd 포맷, 한국어 지원, 상단 밀착 타이틀, 기간별 라벨 추가)
+    차트 이미지 생성 (yy-mm-dd 포맷, 한국어 지원, 상단 밀착 타이틀, 기간별 이동평균선 추가)
     Args:
-        hlines_data: [(price, label), ...] 필수 파라미터
+        symbol: 종목코드
+        candles: 캔들 데이터 리스트 (최소 120개 이상 권장 for MA)
+        logger: 로거
     """
     try:
         # 이전 차트 파일 정리 (해당 symbol의 png 파일 삭제)
@@ -313,6 +315,22 @@ def create_chart(symbol, candles, logger, hlines_data):
         df.set_index('Date', inplace=True)
         df.sort_index(inplace=True)
 
+        # 이동평균선 계산 (5, 20, 60, 120)
+        ma_colors = {
+            '5일': '#2ca02c',   # Green
+            '20일': '#d62728',  # Red
+            '60일': '#ff7f0e',  # Orange
+            '120일': '#9467bd'  # Purple
+        }
+        
+        df['MA5'] = df['Close'].rolling(window=5).mean()
+        df['MA20'] = df['Close'].rolling(window=20).mean()
+        df['MA60'] = df['Close'].rolling(window=60).mean()
+        df['MA120'] = df['Close'].rolling(window=120).mean()
+
+        # 최근 120일 데이터만 슬라이싱 (계산 후 자르기)
+        df = df.iloc[-120:]
+
         # 폰트 및 스타일 설정 (Noto Sans KR 사용)
         FONT_PATH = f"{PROJECT_ROOT}/fonts/NotoSansKR-Regular.ttf"
         
@@ -334,20 +352,26 @@ def create_chart(symbol, candles, logger, hlines_data):
         )
 
         data_dir = f"{PROJECT_ROOT}/data"
-        save_path = f"{data_dir}/chart_{symbol}.png"
+        save_path = f"{data_dir}/chart_{symbol}_{datetime.now().strftime('%y%m%d_%H%M%S')}.png"
+
+        # 추가 플롯 (이동평균선)
+        ap = [
+            mpf.make_addplot(df['MA5'], color=ma_colors['5일'], width=1.0),
+            mpf.make_addplot(df['MA20'], color=ma_colors['20일'], width=1.0),
+            mpf.make_addplot(df['MA60'], color=ma_colors['60일'], width=1.0),
+            mpf.make_addplot(df['MA120'], color=ma_colors['120일'], width=1.0)
+        ]
 
         # 차트 그리기
-        hlines_values = [h[0] for h in hlines_data]
-        
         fig, axes = mpf.plot(
             df,
             type='candle',
             volume=True,
             style=s,
+            addplot=ap,
             ylabel='', # Y축 라벨 제거
             ylabel_lower='', # 거래량 라벨 제거
             datetime_format='%y-%m-%d',
-            hlines=dict(hlines=hlines_values, colors=['#FFC300','#FF5733','#C70039','#900C3F'], linestyle='--', linewidths=1.0) if hlines_values else None,
             returnfig=True,
             figratio=(10, 7)
         )
@@ -393,15 +417,24 @@ def create_chart(symbol, candles, logger, hlines_data):
                     label.set_horizontalalignment('center')
                 ax.tick_params(axis='x', pad=5)
 
-        # 가로선 라벨 추가 (우측 끝)
-        if hlines_data:
-            # mpf.plot(returnfig=True)에서 axes[0]는 메인 차트 영역임
-            main_ax = axes[0]
-            for val, label in hlines_data:
-                main_ax.text(len(df)-0.5, val, f' {label}', va='center', ha='left', fontsize=8, color='#C70039', fontweight='bold', clip_on=False)
+        # 현재 일시 표시 (우측 상단)
+        current_time_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        axes[0].text(0.99, 1.01, current_time_str, transform=axes[0].transAxes, 
+                     ha='right', va='bottom', fontsize=8)
 
-        # 여백 조정: 전체 이미지 상단 여백을 줄이고 타이틀과 차트를 밀착
-        fig.subplots_adjust(top=0.93, bottom=0.10, left=0.08, right=0.92)
+        # 하단 범례 추가 (fig.legend 사용)
+        from matplotlib.lines import Line2D
+        legend_elements = [
+            Line2D([0], [0], color=color, lw=2, label=label) 
+            for label, color in ma_colors.items()
+        ]
+        
+        # 범례를 하단 중앙에 배치
+        fig.legend(handles=legend_elements, loc='lower center', 
+                   bbox_to_anchor=(0.55, 0.08), ncol=4, frameon=False, prop={'size': 9, 'weight': 'bold'})
+
+        # 여백 조정: 하단 여백을 충분히 주어 범례 공간 확보
+        fig.subplots_adjust(top=0.90, bottom=0.15, left=0.08, right=0.92)
 
         # 이미지 저장
         fig.savefig(save_path, dpi=100, bbox_inches='tight', pad_inches=0.05)
@@ -454,20 +487,14 @@ def send_alert(symbol, alert_type, current_price, db, telegram, logger):
 """.strip()
 
     try:
-        # 차트 생성 (최근 120일 데이터 기준)
-        candles = get_daily_candles(symbol, count=120, logger=logger)
+        # 차트 생성 (최근 300일 데이터 기준 - 이동평균선 계산용)
+        candles = get_daily_candles(symbol, count=300, logger=logger)
         chart_path = None
         if candles:
             candles.reverse() # 오래된 순으로
             
-            # 수평선 데이터 준비 (기간별 고가/저가)
-            hlines_data = []
-            if price_5d: hlines_data.append((price_5d, "5일"))
-            if price_20d: hlines_data.append((price_20d, "20일"))
-            if price_60d: hlines_data.append((price_60d, "60일"))
-            if price_120d: hlines_data.append((price_120d, "120일"))
-            
-            chart_path = create_chart(symbol, candles, logger, hlines_data=hlines_data)
+            # 차트 생성 실행 (수평선 데이터 제거, 순수 캔들만 전달)
+            chart_path = create_chart(symbol, candles, logger)
 
             if chart_path:
                 telegram.send_photo(chart_path, caption=message)
