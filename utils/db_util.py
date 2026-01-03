@@ -1,5 +1,4 @@
 import sqlite3
-from datetime import datetime
 
 
 class DatabaseUtil:
@@ -51,10 +50,13 @@ class DatabaseUtil:
         cursor.execute(f'''
             CREATE TABLE IF NOT EXISTS {table_name} (
                 idx INTEGER PRIMARY KEY AUTOINCREMENT,
-                trade_price REAL NOT NULL,
+                open_price REAL NOT NULL,
+                close_price REAL NOT NULL,
                 high_price REAL NOT NULL,
                 low_price REAL NOT NULL,
-                reg_date TEXT NOT NULL
+                volume REAL NOT NULL,
+                reg_date TEXT NOT NULL,
+                UNIQUE(reg_date)
             )
         ''')
 
@@ -75,9 +77,11 @@ class DatabaseUtil:
             candles: 캔들 데이터 리스트
                 [
                     {
+                        'opening_price': float,
                         'trade_price': float,
                         'high_price': float,
                         'low_price': float,
+                        'candle_acc_trade_volume': float,
                         'candle_date_time_kst': 'YYYY-MM-DD HH:MM:SS'
                     },
                     ...
@@ -87,86 +91,113 @@ class DatabaseUtil:
         cursor = self.conn.cursor()
 
         for candle in candles:
+            # reg_date를 날짜만 추출 (YYYY-MM-DD)
+            date_only = candle['candle_date_time_kst'][:10]
+
             cursor.execute(f'''
-                INSERT INTO {table_name} (trade_price, high_price, low_price, reg_date)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO {table_name}
+                (open_price, close_price, high_price, low_price, volume, reg_date)
+                VALUES (?, ?, ?, ?, ?, ?)
             ''', (
+                candle['opening_price'],
                 candle['trade_price'],
                 candle['high_price'],
                 candle['low_price'],
-                candle['candle_date_time_kst']
+                candle['candle_acc_trade_volume'],
+                date_only
             ))
 
         self.conn.commit()
 
-    def save_price(self, symbol, price_data):
+    def get_record_by_date(self, symbol, date):
         """
-        가격 데이터 저장
+        특정 날짜의 레코드 조회
 
         Args:
             symbol: 'BTC', 'XRP', 'ETH'
-            price_data: {
-                'trade_price': float,
+            date: 'YYYY-MM-DD'
+
+        Returns:
+            {
+                'idx': int,
+                'open_price': float,
+                'close_price': float,
                 'high_price': float,
-                'low_price': float
+                'low_price': float,
+                'volume': float,
+                'reg_date': str
             }
+            없으면 None
         """
         table_name = f"bp_price_{symbol.lower()}"
-        reg_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-
         cursor = self.conn.cursor()
+
         cursor.execute(f'''
-            INSERT INTO {table_name} (trade_price, high_price, low_price, reg_date)
-            VALUES (?, ?, ?, ?)
+            SELECT * FROM {table_name}
+            WHERE reg_date = ?
+        ''', (date,))
+
+        result = cursor.fetchone()
+        if result:
+            return dict(result)
+        return None
+
+    def insert_candle(self, symbol, candle):
+        """
+        새로운 날짜 레코드 삽입
+
+        Args:
+            symbol: 'BTC', 'XRP', 'ETH'
+            candle: 일간 캔들 데이터
+        """
+        table_name = f"bp_price_{symbol.lower()}"
+        cursor = self.conn.cursor()
+
+        date_only = candle['candle_date_time_kst'][:10]
+
+        cursor.execute(f'''
+            INSERT INTO {table_name}
+            (open_price, close_price, high_price, low_price, volume, reg_date)
+            VALUES (?, ?, ?, ?, ?, ?)
         ''', (
-            price_data['trade_price'],
-            price_data['high_price'],
-            price_data['low_price'],
-            reg_date
+            candle['opening_price'],
+            candle['trade_price'],
+            candle['high_price'],
+            candle['low_price'],
+            candle['candle_acc_trade_volume'],
+            date_only
         ))
+
         self.conn.commit()
 
-    def get_today_high(self, symbol):
+    def update_candle(self, symbol, candle, date):
         """
-        당일 최고가 조회 (DB 기준)
+        기존 레코드 업데이트
 
-        Returns:
-            float: 오늘 저장된 trade_price 중 최고값
-            None: 데이터 없음
-        """
-        table_name = f"bp_price_{symbol.lower()}"
-        today = datetime.now().strftime('%Y-%m-%d')
-
-        cursor = self.conn.cursor()
-        cursor.execute(f'''
-            SELECT MAX(trade_price) as max_price
-            FROM {table_name}
-            WHERE DATE(reg_date) = ?
-        ''', (today,))
-
-        result = cursor.fetchone()
-        return result['max_price'] if result and result['max_price'] else None
-
-    def get_today_low(self, symbol):
-        """
-        당일 최저가 조회 (DB 기준)
-
-        Returns:
-            float: 오늘 저장된 trade_price 중 최저값
-            None: 데이터 없음
+        Args:
+            symbol: 'BTC', 'XRP', 'ETH'
+            candle: 일간 캔들 데이터
+            date: 'YYYY-MM-DD'
         """
         table_name = f"bp_price_{symbol.lower()}"
-        today = datetime.now().strftime('%Y-%m-%d')
-
         cursor = self.conn.cursor()
-        cursor.execute(f'''
-            SELECT MIN(trade_price) as min_price
-            FROM {table_name}
-            WHERE DATE(reg_date) = ?
-        ''', (today,))
 
-        result = cursor.fetchone()
-        return result['min_price'] if result and result['min_price'] else None
+        cursor.execute(f'''
+            UPDATE {table_name}
+            SET close_price = ?,
+                high_price = ?,
+                low_price = ?,
+                volume = ?
+            WHERE reg_date = ?
+        ''', (
+            candle['trade_price'],
+            candle['high_price'],
+            candle['low_price'],
+            candle['candle_acc_trade_volume'],
+            date
+        ))
+
+        self.conn.commit()
 
     def get_period_high(self, symbol, days):
         """
@@ -177,14 +208,14 @@ class DatabaseUtil:
             days: 5, 20, 60, 120
 
         Returns:
-            float: N일간 trade_price 중 최고값
+            float: N일간 high_price 중 최고값
             None: 데이터 없음
         """
         table_name = f"bp_price_{symbol.lower()}"
 
         cursor = self.conn.cursor()
         cursor.execute(f'''
-            SELECT MAX(trade_price) as max_price
+            SELECT MAX(high_price) as max_price
             FROM {table_name}
             WHERE DATE(reg_date) >= DATE('now', '-{days} days')
         ''')
@@ -201,17 +232,65 @@ class DatabaseUtil:
             days: 5, 20, 60, 120
 
         Returns:
-            float: N일간 trade_price 중 최저값
+            float: N일간 low_price 중 최저값
             None: 데이터 없음
         """
         table_name = f"bp_price_{symbol.lower()}"
 
         cursor = self.conn.cursor()
         cursor.execute(f'''
-            SELECT MIN(trade_price) as min_price
+            SELECT MIN(low_price) as min_price
             FROM {table_name}
             WHERE DATE(reg_date) >= DATE('now', '-{days} days')
         ''')
 
         result = cursor.fetchone()
         return result['min_price'] if result and result['min_price'] else None
+
+    def get_period_candles(self, symbol, days):
+        """
+        N일 기간의 캔들 데이터 조회 (차트 생성 및 이동평균 계산용)
+
+        Args:
+            symbol: 'BTC', 'XRP', 'ETH'
+            days: 조회할 일수 (예: 300)
+
+        Returns:
+            list: 캔들 데이터 리스트 (오래된 순서)
+                [
+                    {
+                        'opening_price': float,
+                        'trade_price': float,
+                        'high_price': float,
+                        'low_price': float,
+                        'candle_acc_trade_volume': float,
+                        'candle_date_time_kst': 'YYYY-MM-DD 00:00:00'
+                    },
+                    ...
+                ]
+            빈 리스트: 데이터 없음
+        """
+        table_name = f"bp_price_{symbol.lower()}"
+        cursor = self.conn.cursor()
+
+        cursor.execute(f'''
+            SELECT open_price, close_price, high_price, low_price, volume, reg_date
+            FROM {table_name}
+            WHERE DATE(reg_date) >= DATE('now', '-{days} days')
+            ORDER BY reg_date ASC
+        ''')
+
+        results = cursor.fetchall()
+
+        candles = []
+        for row in results:
+            candles.append({
+                'opening_price': row['open_price'],
+                'trade_price': row['close_price'],  # close_price를 trade_price로 매핑
+                'high_price': row['high_price'],
+                'low_price': row['low_price'],
+                'candle_acc_trade_volume': row['volume'],
+                'candle_date_time_kst': f"{row['reg_date']} 00:00:00"  # 날짜 형식 맞추기
+            })
+
+        return candles
