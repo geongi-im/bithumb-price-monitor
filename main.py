@@ -18,6 +18,9 @@ from utils.db_util import DatabaseUtil
 # 환경변수 로드
 load_dotenv()
 
+# 로거 세팅
+logger = LoggerUtil().get_logger()
+
 # 경로 설정
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = f"{PROJECT_ROOT}/data"
@@ -25,7 +28,6 @@ DB_PATH = f"{DATA_DIR}/bithumb_price_monitor.db"
 
 # 디렉토리 생성
 os.makedirs(DATA_DIR, exist_ok=True)
-
 
 def validate_env():
     """
@@ -53,31 +55,127 @@ def validate_env():
         sys.exit(1)
 
 
-def get_daily_candles(symbol, count=120, logger=None):
+def get_daily_candles(symbol, count=120):
     """
-    빗썸 일봉 캔들 데이터 조회
+    빗썸 일봉 캔들 데이터 조회 (다중 호출 지원)
 
     Args:
         symbol: 'BTC', 'XRP', 'ETH'
-        count: 조회할 캔들 개수 (기본 120일)
-        logger: Logger 인스턴스
+        count: 조회할 캔들 개수 (200 이상도 가능, 자동 다중 호출)
 
     Returns:
-        list: 캔들 데이터 리스트
+        list: 캔들 데이터 리스트 (최신→과거 순서)
             [
                 {
+                    'opening_price': float,
                     'trade_price': float,
                     'high_price': float,
                     'low_price': float,
+                    'candle_acc_trade_volume': float,
                     'candle_date_time_kst': 'YYYY-MM-DD HH:MM:SS'
                 },
                 ...
             ]
         실패 시 None
     """
+    import time
+
     url = f"https://api.bithumb.com/v1/candles/days"
+    headers = {"accept": "application/json"}
+
+    all_candles = []
+    remaining_count = count
+    to_timestamp = None  # 첫 호출은 None (최신 데이터)
+
+    try:
+        while remaining_count > 0:
+            # 이번 배치 크기 (최대 200)
+            batch_size = min(remaining_count, 200)
+
+            # 파라미터 설정
+            params = {
+                'count': batch_size,
+                'market': f'KRW-{symbol}'
+            }
+
+            # 2차 호출부터 to 파라미터 추가
+            if to_timestamp:
+                params['to'] = to_timestamp
+
+            # API 호출
+            logger.info(f"[{symbol}] API 호출: count={batch_size}, to={to_timestamp or '최신'}")
+            response = requests.get(url, params=params, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+
+            # 응답 검증
+            if not isinstance(data, list):
+                logger.error(f"[{symbol}] 예상하지 못한 응답: {type(data)}")
+                return None
+
+            # 더 이상 데이터 없으면 종료
+            if len(data) == 0:
+                logger.warning(f"[{symbol}] 과거 데이터 없음. 총 {len(all_candles)}개 수집")
+                break
+
+            # 캔들 데이터 변환
+            batch_candles = []
+            for candle in data:
+                batch_candles.append({
+                    'opening_price': float(candle['opening_price']),
+                    'high_price': float(candle['high_price']),
+                    'low_price': float(candle['low_price']),
+                    'trade_price': float(candle['trade_price']),
+                    'candle_acc_trade_volume': float(candle['candle_acc_trade_volume']),
+                    'candle_date_time_kst': candle['candle_date_time_kst']
+                })
+
+            # 배치 추가
+            all_candles.extend(batch_candles)
+
+            # 다음 호출을 위한 to 파라미터 설정
+            # 마지막(가장 오래된) 캔들의 timestamp 사용
+            oldest_candle = data[-1]
+            to_timestamp = oldest_candle['candle_date_time_kst']
+
+            # 남은 개수 갱신
+            remaining_count -= len(batch_candles)
+
+            # API Rate Limit 대응 (0.5초 대기)
+            if remaining_count > 0:
+                time.sleep(0.5)
+                logger.info(f"[{symbol}] 다음 배치 대기... (남은: {remaining_count}개)")
+
+        logger.info(f"[{symbol}] 일봉 캔들 {len(all_candles)}개 조회 완료")
+        return all_candles
+
+    except Exception as e:
+        logger.error(f"[{symbol}] 일봉 캔들 조회 실패: {str(e)}")
+        # 부분 데이터라도 반환
+        return all_candles if len(all_candles) > 0 else None
+
+
+def get_latest_daily_candle(symbol):
+    """
+    오늘 일간 캔들 데이터 조회 (1개)
+
+    Args:
+        symbol: 'BTC', 'XRP', 'ETH'
+
+    Returns:
+        {
+            'opening_price': float,
+            'trade_price': float,
+            'high_price': float,
+            'low_price': float,
+            'candle_acc_trade_volume': float,
+            'candle_date_time_kst': 'YYYY-MM-DD HH:MM:SS'
+        }
+        실패 시 None
+    """
+    url = "https://api.bithumb.com/v1/candles/days"
     params = {
-        'count': count,
+        'count': 1,
         'market': f'KRW-{symbol}'
     }
     headers = {"accept": "application/json"}
@@ -88,88 +186,37 @@ def get_daily_candles(symbol, count=120, logger=None):
         data = response.json()
 
         # 빗썸 API는 배열로 응답
-        if not isinstance(data, list):
-            if logger:
-                logger.error(f"[{symbol}] 예상하지 못한 API 응답 형식: {type(data)}")
-            return None
-
-        candles = []
-        for candle in data:
-            candles.append({
-                'opening_price': float(candle['opening_price']),
-                'high_price': float(candle['high_price']),
-                'low_price': float(candle['low_price']),
-                'trade_price': float(candle['trade_price']),
-                'candle_acc_trade_volume': float(candle['candle_acc_trade_volume']),
-                'candle_date_time_kst': candle['candle_date_time_kst']
-            })
-
-        if logger:
-            logger.info(f"[{symbol}] 일봉 캔들 {len(candles)}개 조회 완료")
-
-        return candles
-
-    except Exception as e:
-        if logger:
-            logger.error(f"[{symbol}] 일봉 캔들 조회 실패: {str(e)}")
-        return None
-
-
-def get_current_price(symbol, logger):
-    """
-    빗썸 API에서 현재가 정보 가져오기
-
-    Args:
-        symbol: 'BTC', 'XRP', 'ETH'
-        logger: Logger 인스턴스
-
-    Returns:
-        {
-            'trade_price': float,      # 현재가
-            'high_price': float,       # 당일 고가
-            'low_price': float        # 당일 저가
-        }
-        실패 시 None
-    """
-    url = f"https://api.bithumb.com/v1/ticker?markets=KRW-{symbol}"
-    headers = {"accept": "application/json"}
-
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-
-        # 빗썸 API는 배열로 응답하므로 첫 번째 요소 가져오기
         if not isinstance(data, list) or len(data) == 0:
             logger.error(f"[{symbol}] 예상하지 못한 API 응답 형식: {type(data)}")
             return None
 
-        ticker = data[0]
+        candle = data[0]
 
-        # API 응답 파싱
         return {
-            'trade_price': float(ticker['trade_price']),
-            'high_price': float(ticker['high_price']),
-            'low_price': float(ticker['low_price'])
+            'opening_price': float(candle['opening_price']),
+            'trade_price': float(candle['trade_price']),
+            'high_price': float(candle['high_price']),
+            'low_price': float(candle['low_price']),
+            'candle_acc_trade_volume': float(candle['candle_acc_trade_volume']),
+            'candle_date_time_kst': candle['candle_date_time_kst']
         }
     except Exception as e:
-        logger.error(f"[{symbol}] API 호출 실패: {str(e)}")
+        logger.error(f"[{symbol}] 일간 캔들 조회 실패: {str(e)}")
         return None
 
 
-def initialize_symbol_table(symbol, db, logger):
+def initialize_symbol_table(symbol, db):
     """
     종목 테이블 초기화
 
     테이블이 없으면:
     1. 테이블 생성
-    2. 120일치 일봉 캔들 데이터 조회
+    2. N일치 일봉 캔들 데이터 조회
     3. DB에 일괄 삽입
 
     Args:
         symbol: 'BTC', 'XRP', 'ETH'
         db: DatabaseUtil 인스턴스
-        logger: Logger 인스턴스
     """
     if not db.table_exists(symbol):
         logger.info(f"[{symbol}] 테이블이 존재하지 않습니다. 초기화를 시작합니다.")
@@ -178,8 +225,8 @@ def initialize_symbol_table(symbol, db, logger):
         db.create_table(symbol)
         logger.info(f"[{symbol}] 테이블 생성 완료: bp_price_{symbol.lower()}")
 
-        # 2. 120일치 캔들 데이터 조회
-        candles = get_daily_candles(symbol, count=120, logger=logger)
+        # 2. 1년치(365일) 캔들 데이터 조회
+        candles = get_daily_candles(symbol, count=365)
 
         if candles:
             # 3. DB에 일괄 삽입 (오래된 순서대로)
@@ -191,100 +238,61 @@ def initialize_symbol_table(symbol, db, logger):
     else:
         logger.info(f"[{symbol}] 테이블 존재 확인 완료")
 
-
-def main():
-    """메인 실행 함수"""
-
-    # 1. 환경변수 검증
-    validate_env()
-
-    # 2. 초기화
-    logger = LoggerUtil().get_logger()
-    telegram = TelegramUtil()
-    db = DatabaseUtil(DB_PATH)
-
-    # 환경변수에서 모니터링 코인 가져오기
-    monitored_symbols = os.getenv('MONITORED_SYMBOLS').split(',')
-    monitored_symbols = [s.strip().upper() for s in monitored_symbols]
-
-    logger.info("=== 빗썸 가격 모니터 시작 ===")
-    logger.info(f"모니터링 대상: {', '.join(monitored_symbols)}")
-
-    # 3. DB 연결
-    db.connect()
-
-    # 4. 각 종목 테이블 초기화 (없으면 생성 + 120일 데이터 로딩)
-    for symbol in monitored_symbols:
-        initialize_symbol_table(symbol, db, logger)
-
-    # 5. 각 코인 처리
-    for symbol in monitored_symbols:
-        process_symbol(symbol, logger, telegram, db)
-
-    # 6. 종료
-    db.close()
-    logger.info("=== 빗썸 가격 모니터 완료 ===")
-
-
-def process_symbol(symbol, logger, telegram, db):
+def process_symbol(symbol, telegram, db):
     """
-    단일 종목 처리
+    단일 종목 처리 (UPSERT 방식)
 
-    1. API에서 현재가 조회
-    2. 당일 고가/저가 조회 (DB 기준, 저장 전)
-    3. DB에 저장
-    4. 현재가가 당일 고가/저가를 갱신했는지 확인
-    5. 갱신 시 텔레그램 알림 (5일/20일/60일/120일 고가 포함)
+    1. 일간 캔들 API 호출 (count=1) → 오늘 캔들 데이터
+    2. DB에서 오늘 날짜 레코드 조회
+    3. 레코드 없으면: INSERT (새로운 날짜)
+    4. 레코드 있으면:
+       - UPDATE 전 고가/저가 비교
+       - 갱신 시 알림 전송
+       - UPDATE 실행
     """
-
     logger.info(f"[{symbol}] 처리 시작")
 
-    # 1. API 호출
-    price_data = get_current_price(symbol, logger)
-    if price_data is None:
+    # 1. 일간 캔들 API 호출
+    candle = get_latest_daily_candle(symbol)
+    if candle is None:
         logger.warning(f"[{symbol}] API 호출 실패 - 건너뜀")
         return
 
-    current_price = price_data['trade_price']
+    current_price = candle['trade_price']
     logger.info(f"[{symbol}] 현재가: {current_price:,.0f}원")
 
-    # 2. 당일 기존 고가/저가 조회 (저장 전)
-    prev_today_high = db.get_today_high(symbol)
-    prev_today_low = db.get_today_low(symbol)
+    # 2. 오늘 날짜 레코드 조회
+    today_date = datetime.now().strftime('%Y-%m-%d')
+    existing_record = db.get_record_by_date(symbol, today_date)
 
-    # 3. DB 저장
-    db.save_price(symbol, price_data)
+    # 3. INSERT or UPDATE
+    if existing_record is None:
+        # INSERT: 오늘 첫 실행
+        db.insert_candle(symbol, candle)
+        logger.info(f"[{symbol}] 신규 레코드 삽입 (날짜: {today_date})")
+    else:
+        # UPDATE: 고가/저가 갱신 체크 후 업데이트
+        is_new_high = current_price > existing_record['high_price']
+        is_new_low = current_price < existing_record['low_price']
 
-    # 4. 당일 고가/저가 갱신 여부 확인
-    is_new_high = False
-    is_new_low = False
+        if is_new_high:
+            logger.info(f"[{symbol}] 당일 고가 갱신: {existing_record['high_price']:,.0f} -> {current_price:,.0f}")
+            send_alert(symbol, 'HIGH', current_price, db, telegram)
 
-    if prev_today_high is not None:
-        # 기존 데이터가 있을 때만 비교
-        if current_price > prev_today_high:
-            is_new_high = True
-            logger.info(f"[{symbol}] 당일 고가 갱신: {prev_today_high:,.0f} -> {current_price:,.0f}")
+        if is_new_low:
+            logger.info(f"[{symbol}] 당일 저가 갱신: {existing_record['low_price']:,.0f} -> {current_price:,.0f}")
+            send_alert(symbol, 'LOW', current_price, db, telegram)
 
-    if prev_today_low is not None:
-        if current_price < prev_today_low:
-            is_new_low = True
-            logger.info(f"[{symbol}] 당일 저가 갱신: {prev_today_low:,.0f} -> {current_price:,.0f}")
+        # 레코드 업데이트
+        db.update_candle(symbol, candle, today_date)
+        logger.info(f"[{symbol}] 레코드 업데이트 (종가: {current_price:,.0f}원)")
 
-    # 5. 알림 전송
-    if is_new_high:
-        send_alert(symbol, 'HIGH', current_price, db, telegram, logger)
-
-    if is_new_low:
-        send_alert(symbol, 'LOW', current_price, db, telegram, logger)
-
-
-def create_chart(symbol, candles, logger):
+def create_chart(symbol, candles):
     """
     차트 이미지 생성 (yy-mm-dd 포맷, 한국어 지원, 상단 밀착 타이틀, 기간별 이동평균선 추가)
     Args:
         symbol: 종목코드
         candles: 캔들 데이터 리스트 (최소 120개 이상 권장 for MA)
-        logger: 로거
     """
     try:
         # 이전 차트 파일 정리 (해당 symbol의 png 파일 삭제)
@@ -446,8 +454,7 @@ def create_chart(symbol, candles, logger):
         logger.error(f"[{symbol}] 차트 생성 실패: {str(e)}")
         raise
 
-
-def send_alert(symbol, alert_type, current_price, db, telegram, logger):
+def send_alert(symbol, alert_type, current_price, db, telegram):
     """
     텔레그램 알림 전송 (텍스트 + 차트)
     """
@@ -487,14 +494,11 @@ def send_alert(symbol, alert_type, current_price, db, telegram, logger):
 """.strip()
 
     try:
-        # 차트 생성 (최근 300일 데이터 기준 - 이동평균선 계산용)
-        candles = get_daily_candles(symbol, count=300, logger=logger)
+        # 차트 생성 (DB에서 최근 365일 데이터 조회 - 120일 이동평균선 계산용)
+        candles = db.get_period_candles(symbol, days=365)
         chart_path = None
         if candles:
-            candles.reverse() # 오래된 순으로
-            
-            # 차트 생성 실행 (수평선 데이터 제거, 순수 캔들만 전달)
-            chart_path = create_chart(symbol, candles, logger)
+            chart_path = create_chart(symbol, candles)
 
             if chart_path:
                 telegram.send_photo(chart_path, caption=message)
@@ -511,14 +515,44 @@ def send_alert(symbol, alert_type, current_price, db, telegram, logger):
             pass
 
 
+def main():
+    """메인 실행 함수"""
+
+    # 1. 환경변수 검증
+    validate_env()
+
+    # 2. 초기화
+    telegram = TelegramUtil()
+    db = DatabaseUtil(DB_PATH)
+
+    # 환경변수에서 모니터링 코인 가져오기
+    monitored_symbols = os.getenv('MONITORED_SYMBOLS').split(',')
+    monitored_symbols = [s.strip().upper() for s in monitored_symbols]
+
+    logger.info("=== 빗썸 가격 모니터 시작 ===")
+    logger.info(f"모니터링 대상: {', '.join(monitored_symbols)}")
+
+    # 3. DB 연결
+    db.connect()
+
+    # 4. 각 종목 테이블 초기화 (없으면 생성 + N일 데이터 로딩)
+    for symbol in monitored_symbols:
+        initialize_symbol_table(symbol, db)
+
+    # 5. 각 코인 처리
+    for symbol in monitored_symbols:
+        process_symbol(symbol, telegram, db)
+
+    # 6. 종료
+    db.close()
+    logger.info("=== 빗썸 가격 모니터 완료 ===")
+
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        logger = LoggerUtil().get_logger()
         logger.error(f"치명적 오류: {str(e)}", exc_info=True)
         
-        # 테스트 채널로 오류 메시지 전송
         try:
             telegram = TelegramUtil()
             error_msg = f"🚨 치명적 오류 발생\n\n{str(e)}\n\n{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
