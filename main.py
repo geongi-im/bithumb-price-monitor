@@ -454,6 +454,33 @@ def create_chart(symbol, candles):
         logger.error(f"[{symbol}] 차트 생성 실패: {str(e)}")
         raise
 
+def format_percent_diff(current_price, period_price):
+    """
+    현재가 대비 기간별 가격의 퍼센트 차이 계산
+    
+    Args:
+        current_price: 현재가
+        period_price: 기간별 고가/저가 (None 가능)
+    
+    Returns:
+        str: " (+2.50%)" 또는 " (-3.75%)" 또는 ""
+    """
+    if period_price is None or period_price == 0:
+        return ""
+    
+    diff_amount = current_price - period_price
+    
+    # 차이가 0이면 표시 안 함
+    if diff_amount == 0:
+        return ""
+    
+    percent = (diff_amount / period_price) * 100
+    
+    if diff_amount > 0:
+        return f" (+{percent:.2f}%)"
+    else:
+        return f" ({percent:.2f}%)"
+
 def send_alert(symbol, alert_type, current_price, db, telegram):
     """
     텔레그램 알림 전송 (텍스트 + 차트)
@@ -480,15 +507,21 @@ def send_alert(symbol, alert_type, current_price, db, telegram):
     price_60d_str = f"{price_60d:,.0f}" if price_60d is not None else "N/A"
     price_120d_str = f"{price_120d:,.0f}" if price_120d is not None else "N/A"
 
+    # 퍼센트 차이 계산
+    diff_5d = format_percent_diff(current_price, price_5d)
+    diff_20d = format_percent_diff(current_price, price_20d)
+    diff_60d = format_percent_diff(current_price, price_60d)
+    diff_120d = format_percent_diff(current_price, price_120d)
+
     # 메시지 작성
     message = f"""
 <b>{alert_text}</b>
 <b>종목코드: {symbol}</b>
 현재가: {current_price:,.0f}원
-5일{period_label}: {price_5d_str}원
-20일{period_label}: {price_20d_str}원
-60일{period_label}: {price_60d_str}원
-120일{period_label}: {price_120d_str}원
+5일{period_label}: {price_5d_str}원{diff_5d}
+20일{period_label}: {price_20d_str}원{diff_20d}
+60일{period_label}: {price_60d_str}원{diff_60d}
+120일{period_label}: {price_120d_str}원{diff_120d}
 
 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """.strip()
