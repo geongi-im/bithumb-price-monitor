@@ -242,8 +242,8 @@ def process_symbol(symbol, telegram, db):
     """
     단일 종목 처리 (UPSERT 방식)
 
-    1. 일간 캔들 API 호출 (count=1) → 오늘 캔들 데이터
-    2. DB에서 오늘 날짜 레코드 조회
+    1. 일간 캔들 API 호출 (count=1) → 최신 캔들 데이터
+    2. API 응답에서 날짜 추출하여 DB에서 해당 날짜 레코드 조회
     3. 레코드 없으면: INSERT (새로운 날짜)
     4. 레코드 있으면:
        - UPDATE 전 고가/저가 비교
@@ -261,15 +261,15 @@ def process_symbol(symbol, telegram, db):
     current_price = candle['trade_price']
     logger.info(f"[{symbol}] 현재가: {current_price:,.0f}원")
 
-    # 2. 오늘 날짜 레코드 조회
-    today_date = datetime.now().strftime('%Y-%m-%d')
-    existing_record = db.get_record_by_date(symbol, today_date)
+    # 2. API 응답에서 날짜 추출 (일관성 유지)
+    candle_date = candle['candle_date_time_kst'][:10]
+    existing_record = db.get_record_by_date(symbol, candle_date)
 
     # 3. INSERT or UPDATE
     if existing_record is None:
-        # INSERT: 오늘 첫 실행
+        # INSERT: 해당 날짜 첫 실행
         db.insert_candle(symbol, candle)
-        logger.info(f"[{symbol}] 신규 레코드 삽입 (날짜: {today_date})")
+        logger.info(f"[{symbol}] 신규 레코드 삽입 (날짜: {candle_date})")
     else:
         # UPDATE: 고가/저가 갱신 체크 후 업데이트
         is_new_high = current_price > existing_record['high_price']
@@ -284,8 +284,8 @@ def process_symbol(symbol, telegram, db):
             send_alert(symbol, 'LOW', current_price, db, telegram)
 
         # 레코드 업데이트
-        db.update_candle(symbol, candle, today_date)
-        logger.info(f"[{symbol}] 레코드 업데이트 (종가: {current_price:,.0f}원)")
+        db.update_candle(symbol, candle, candle_date)
+        logger.info(f"[{symbol}] 레코드 업데이트 (종가: {current_price:,.0f}원, 날짜: {candle_date})")
 
 def create_chart(symbol, candles):
     """
